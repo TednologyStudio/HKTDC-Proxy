@@ -39,7 +39,7 @@ export const config = {
       // 4. 轉發給 Google Gemini
       // 這裡用 gemini-1.5-flash，你也可以改用 gemini-2.0-flash-exp
       const googleResp = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent?key=${apiKey}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
