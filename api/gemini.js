@@ -1,61 +1,130 @@
-// api/index.js
-
 export default async function handler(req, res) {
-  // 1. CORS 設定 (允許你的前端網頁 Call 呢個 API)
-  res.setHeader('Access-Control-Allow-Credentials', true);
-  res.setHeader('Access-Control-Allow-Origin', '*'); // 正式版建議換成你的 domain
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-  res.setHeader(
-    'Access-Control-Allow-Headers',
-    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
-  );
+  // ---------------- CORS ----------------
+  const allowedOrigins = [
+    "https://redirectfilter.com",
+    "https://www.redirectfilter.com",
+  ];
 
-  // 處理 Preflight Request (瀏覽器安全檢查)
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
+  const origin = req.headers.origin || "";
+
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*");
   }
 
-  // 只允許 POST
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method Not Allowed' });
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Max-Age", "86400");
+
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method Not Allowed" });
   }
 
   try {
-    // 2. 檢查 API Key 是否存在
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.error("❌ 錯誤：找不到 GEMINI_API_KEY");
-      return res.status(500).json({ error: 'Server Configuration Error: API Key Missing' });
+    // ---------------- 拿前端 JSON ----------------
+    const { imageBase64, style } = req.body;
+
+    if (!imageBase64) {
+      return res.status(400).json({ error: "Missing imageBase64" });
+    }
+    if (!style) {
+      return res.status(400).json({ error: "Missing style" });
     }
 
-    // 3. 轉發請求給 Google
-    // console.log("正在請求 Google Gemini API..."); 
-    
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: "GEMINI_API_KEY not set" });
+    }
+
+    // ---------------- Build Prompt ----------------
+    let outfitDesc = "";
+    let role = "";
+
+    if (style === "construction") {
+      outfitDesc = "wearing a yellow safety helmet and high-visibility reflective construction vest";
+      role = "construction worker";
+    } else if (style === "lawyer") {
+      outfitDesc = "wearing a traditional white barrister wig and formal black lawyer gown";
+      role = "barrister";
+    } else if (style === "firefighter") {
+      outfitDesc = "wearing a firefighter uniform and a safety helmet";
+      role = "firefighter";
+    } else if (style === "graduate") {
+      outfitDesc = "wearing a graduation gown and a mortarboard cap";
+      role = "university graduate";
+    }
+
+    const prompt = `Analyze the uploaded image to understand the all people gender, approximate age, and facial features.
+
+Then, generate a high-quality, photorealistic portrait of all people with those SAME physical attributes, posing as a ${role}, ${outfitDesc}.
+
+all people are facing the camera making a heart shape with hands.
+The background should be a professional blurred environment suitable for a ${role}.
+Ensure the face is clearly visible and realistic. Do not produce a cartoon.`;
+
+    // ---------------- Gemini Payload（⚠️只有必要 fields） ----------------
+    const payload = {
+      contents: [
+        {
+          parts: [
+            { text: prompt },
+            {
+              inline_data: {
+                mime_type: "image/jpeg",
+                data: imageBase64,
+              },
+            },
+          ],
         },
-        body: JSON.stringify(req.body), // 直接將前端的 body 傳過去
+      ],
+      generationConfig: {
+        responseModalities: ["IMAGE"],
+        imageConfig: {
+          aspectRatio: "9:16",
+          imageSize: "1K",
+        },
+      },
+    };
+
+    // ---------------- Call Gemini ----------------
+    const resp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // ❗❗ 只送 payload — 無 imageBase64/style/name 在頂層
+        body: JSON.stringify(payload),
       }
     );
 
-    const data = await response.json();
+    const data = await resp.json();
 
-    // 4. 檢查 Google 是否回傳錯誤
-    if (!response.ok) {
-      console.error("❌ Google API Error:", JSON.stringify(data));
-      return res.status(response.status).json(data);
+    // Google Error Pass-through
+    if (!resp.ok) {
+      return res.status(resp.status).json({ error: data });
     }
 
-    // 5. 成功，回傳資料
-    return res.status(200).json(data);
+    // Extract image
+    const parts = data.candidates?.[0]?.content?.parts;
+    const img = parts?.find((p) => p.inlineData);
 
-  } catch (error) {
-    console.error("❌ Vercel Function Error:", error);
-    return res.status(500).json({ error: error.message });
+    if (!img) {
+      return res.status(500).json({ error: "Gemini returned no image" });
+    }
+
+    const output = `data:${img.inlineData.mimeType};base64,${img.inlineData.data}`;
+
+    return res.status(200).json({ ok: true, imageDataUrl: output });
+
+  } catch (err) {
+    return res.status(500).json({
+      error: "Proxy Error",
+      message: err.message || String(err),
+    });
   }
 }
